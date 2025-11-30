@@ -17,15 +17,20 @@ def init_db():
     """สร้างตารางในฐานข้อมูลถ้ายังไม่มี"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        # สร้างตาราง: user_id (PK), attempts (จำนวนครั้ง), completed (เสร็จยัง), links (เก็บลิงก์เป็น JSON String)
+        
+        # 1. ตาราง Iceberg (เพิ่ม target_attempts)
+        # หมายเหตุ: ถ้ามีไฟล์ DB เก่าอยู่ แนะนำให้ลบทิ้งก่อนรันโค้ดใหม่นี้ เพื่อให้โครงสร้างตารางอัปเดตครับ
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
                 attempts INTEGER DEFAULT 0,
+                target_attempts INTEGER DEFAULT 10,
                 completed INTEGER DEFAULT 0,
                 links TEXT DEFAULT '[]'
             )
         ''')
+        
+        # 2. ตาราง Snowflakes
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS snowflakes (
                 user_id INTEGER PRIMARY KEY,
@@ -34,40 +39,53 @@ def init_db():
                 links TEXT DEFAULT '[]'
             )
         ''')
+
+        # 3. ตาราง Vault (ภารกิจคู่หู)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS vaults (
+                team_id TEXT PRIMARY KEY,
+                user1_id INTEGER,
+                user2_id INTEGER,
+                role_warmer INTEGER,
+                role_turner INTEGER,
+                attempts INTEGER DEFAULT 0,
+                target_attempts INTEGER DEFAULT 10,
+                completed INTEGER DEFAULT 0,
+                links TEXT DEFAULT '[]'
+            )
+        ''')
         conn.commit()
 
+# --- ICEBERG DB FUNCTIONS ---
 def get_player(user_id):
-    """ดึงข้อมูลผู้เล่นจาก DB"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT attempts, completed, links FROM players WHERE user_id = ?", (user_id,))
-        return cursor.fetchone() # คืนค่า (attempts, completed, links) หรือ None
+        cursor.execute("SELECT attempts, target_attempts, completed, links FROM players WHERE user_id = ?", (user_id,))
+        return cursor.fetchone()
 
-def create_player(user_id, link):
-    """สร้างผู้เล่นใหม่"""
+def create_player(user_id, link, target):
     with sqlite3.connect(DB_NAME) as conn:
-        links_json = json.dumps([link]) # แปลง list เป็น string เพื่อเก็บใน DB
-        conn.execute("INSERT INTO players (user_id, attempts, completed, links) VALUES (?, 0, 0, ?)", (user_id, links_json))
+        links_json = json.dumps([link])
+        conn.execute("INSERT INTO players (user_id, attempts, target_attempts, completed, links) VALUES (?, 0, ?, 0, ?)", 
+                     (user_id, target, links_json))
 
 def update_player_progress(user_id, attempts, completed, links_list):
-    """อัปเดตข้อมูลผู้เล่น"""
     with sqlite3.connect(DB_NAME) as conn:
         links_json = json.dumps(links_list)
         conn.execute("UPDATE players SET attempts = ?, completed = ?, links = ? WHERE user_id = ?", 
                      (attempts, 1 if completed else 0, links_json, user_id))
 
 def delete_player(user_id):
-    """ลบผู้เล่น (Reset)"""
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("DELETE FROM players WHERE user_id = ?", (user_id,))
 
 def get_all_players():
-    """ดึงข้อมูลทุกคนสำหรับ Admin"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, attempts, completed FROM players")
+        cursor.execute("SELECT user_id, attempts, target_attempts, completed FROM players")
         return cursor.fetchall()
 
+# --- SNOWFLAKE DB FUNCTIONS ---
 def get_snow_player(user_id):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -85,6 +103,52 @@ def update_snow_progress(user_id, count, completed, links_list):
         conn.execute("UPDATE snowflakes SET count = ?, completed = ?, links = ? WHERE user_id = ?", 
                      (count, 1 if completed else 0, links_json, user_id))
 
+def delete_snow_player(user_id):
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM snowflakes WHERE user_id = ?", (user_id,))
+
+# --- VAULT DB FUNCTIONS ---
+def get_vault_team(user_id):
+    """หาทีมที่ User คนนี้อยู่ (ไม่ว่าจะเป็น user1 หรือ user2)"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT team_id, user1_id, user2_id, role_warmer, role_turner, attempts, target_attempts, completed, links 
+            FROM vaults WHERE user1_id = ? OR user2_id = ?
+        """, (user_id, user_id))
+        return cursor.fetchone()
+
+def create_vault_team(user1_id, user2_id, target):
+    team_id = f"{user1_id}_{user2_id}"
+    # สุ่มบทบาท: 0 = User1 เป็น Warmer, 1 = User1 เป็น Turner
+    roles_config = random.choice([0, 1]) 
+    warmer_id = user1_id if roles_config == 0 else user2_id
+    turner_id = user2_id if roles_config == 0 else user1_id
+    
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("""
+            INSERT INTO vaults (team_id, user1_id, user2_id, role_warmer, role_turner, attempts, target_attempts, completed, links) 
+            VALUES (?, ?, ?, ?, ?, 0, ?, 0, '[]')
+        """, (team_id, user1_id, user2_id, warmer_id, turner_id, target))
+    return warmer_id, turner_id
+
+def update_vault_progress(team_id, attempts, completed, links_list):
+    with sqlite3.connect(DB_NAME) as conn:
+        links_json = json.dumps(links_list)
+        conn.execute("UPDATE vaults SET attempts = ?, completed = ?, links = ? WHERE team_id = ?", 
+                     (attempts, 1 if completed else 0, links_json, team_id))
+
+def delete_vault_team(team_id):
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM vaults WHERE team_id = ?", (team_id,))
+
+def get_all_vaults():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user1_id, user2_id, attempts, target_attempts, completed FROM vaults")
+        return cursor.fetchall()
+
+
 # --- BOT SETUP ---
 class MyClient(discord.Client):
     def __init__(self):
@@ -92,18 +156,165 @@ class MyClient(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def on_ready(self):
-        init_db() # สร้างฐานข้อมูลเมื่อบอทเริ่มทำงาน
+        init_db()
         await self.tree.sync()
-        print(f'Logged in as {self.user} (Iceberg is ready with SQLite!)')
+        print(f'Logged in as {self.user} (Iceberg Systems Online!)')
 
 client = MyClient()
 
+# ==================================================================
+# 🧊 GROUP 1: ICEBERG (ทุบน้ำแข็ง)
+# ==================================================================
 iceberg_group = app_commands.Group(name="iceberg", description="มาทุบน้ำแข็งกับข้า! Iceberg")
 
-# --- CLASS ปุ่มกดสำหรับเกมจับหิมะ (แก้ไขให้รับเวลา timeout) ---
+@iceberg_group.command(name="start", description="ส่งลิงก์รับภารกิจเพื่อเริ่มทุบน้ำแข็ง")
+@app_commands.describe(link="วางลิงก์โพสต์ที่โรลเพลย์รับภารกิจ")
+async def start(interaction: discord.Interaction, link: str):
+    user_id = interaction.user.id
+    player = get_player(user_id)
+    
+    if player:
+        await interaction.response.send_message("⛄ **Iceberg:** โอ๊ยย! เอ็งลงชื่อไปแล้วนี่หว่า ไปใช้คำสั่ง `/iceberg submit` เพื่อทุบน้ำแข็งนู่น!", ephemeral=True)
+        return
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! เอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
+        return
+
+    # --- NEW LOGIC: สุ่ม Target ไว้เลย 4-19 ครั้ง ---
+    target_attempts = random.randint(4, 19)
+    create_player(user_id, link, target_attempts)
+    
+    embed = discord.Embed(
+        title="⛄ Iceberg: \"หึ! คิดว่าจะแน่สักแค่ไหน...\"",
+        description=(
+            f"รับทราบ! ข้าเตรียมก้อนน้ำแข็งไว้ให้เจ้าแล้ว **{interaction.user.name}**\n"
+            "บอกเลยว่าก้อนนี้แข็งเป็นพิเศษ... ข้าพนันเลยว่าเจ้าต้องทุบจนมือหักแน่!\n\n"
+            "**วิธีเล่น:**\n"
+            "1. โรลเพลย์ทุบน้ำแข็ง\n"
+            "2. ส่งลิงก์ด้วย `/iceberg submit`\n"
+            "3. ทำไปเรื่อยๆ จนกว่ามันจะแตก (ข้าไม่บอกหรอกว่าต้องทุบกี่ที ฮ่าๆ!)"
+        ),
+        color=0xa5f3fc 
+    )
+    embed.set_thumbnail(url="https://media.tenor.com/t2akJIhYv6QAAAAM/skibidi-snowmen.gif")
+    await interaction.response.send_message(embed=embed)
+
+@iceberg_group.command(name="submit", description="ส่งลิงก์โรลเพลย์เพื่อทุบน้ำแข็ง")
+@app_commands.describe(link="วางลิงก์โพสต์ที่นี่")
+async def submit(interaction: discord.Interaction, link: str):
+    user_id = interaction.user.id
+    player = get_player(user_id) # (attempts, target, completed, links_str)
+    
+    if not player:
+        await interaction.response.send_message("⛄ **Iceberg:** ยังไม่ได้เริ่มภารกิจเลย! พิมพ์ `/iceberg start` ก่อน!", ephemeral=True)
+        return
+    
+    attempts, target, completed, links_str = player
+    links_list = json.loads(links_str)
+    
+    if completed:
+        await interaction.response.send_message("⛄ **Iceberg:** มันแตกไปแล้ว! จะทุบซ้ำทำไม?", ephemeral=True)
+        return
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์ผิด! ไปเอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
+        return
+    if link in links_list:
+        await interaction.response.send_message("⛄ **Iceberg:** ลิงก์นี้ใช้ไปแล้ว! อย่าลักไก่ ไปโรลใหม่!", ephemeral=True)
+        return
+
+    # Process
+    links_list.append(link)
+    new_attempts = attempts + 1
+    
+    # --- NEW LOGIC: ตรวจสอบกับ Target ที่สุ่มไว้ ---
+    # ถ้าจำนวนครั้ง >= Target ถือว่าแตก
+    is_success = new_attempts >= target
+
+    if is_success: 
+        update_player_progress(user_id, new_attempts, True, links_list)
+        
+        success_msg = (
+            f"🎉 **เออ! ยอมแล้ว! แตกแล้วพอใจยัง?!**\n"
+            f"ทุบไปตั้ง {new_attempts} ครั้ง... ยอมใจความถึกของเอ็งจริงๆ\n"
+            f"เอ้า! รับรางวัลไป <@{user_id}>\n\n"
+            f"📢 **คุณ <@{ADMIN_ID}> (Matthew)!** มาดูผลงานหน่อยครับ!"
+        )
+        embed = discord.Embed(
+            title="🧊 เพล้งงงง! น้ำแข็งแตกกระจาย!",
+            description=success_msg,
+            color=0x4ade80
+        )
+        embed.set_image(url="https://iili.io/fqqod4S.png")
+        await interaction.response.send_message(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed)
+
+    else:
+        update_player_progress(user_id, new_attempts, False, links_list)
+        
+        # สุ่มคำบ่น
+        taunts = [
+            "🥱 **Iceberg:** ยัง... ยังไม่แตกอีก แรงมีแค่นี้เหรอ?",
+            "🤣 **Iceberg:** สะกิดแรงกว่านี้หน่อยสิ!",
+            "🧊 **Iceberg:** ร้าวไปนิดนึง... นิดเดียวจริง ๆ",
+            "🥶 **Iceberg:** หนาวล่ะสิ มือสั่นทุบไม่โดนหรือไง?",
+            "🔨 **Iceberg:** เสียงดังฟังชัด แต่ดาเมจเป็นศูนย์!",
+            f"👀 **Iceberg:** (ทุบไป {new_attempts} ทีแล้วนะ ยังไม่เหนื่อยอีกเหรอ?)"
+        ]
+        chosen_taunt = random.choice(taunts)
+
+        embed = discord.Embed(
+            title=f"💥 โป๊ก! (ครั้งที่ {new_attempts})",
+            description=chosen_taunt + "\n\n*อย่าเพิ่งท้อนะไอ้หนู ไปโรลมาใหม่!*",
+            color=0xef4444
+        )
+        await interaction.response.send_message(embed=embed)
+
+@iceberg_group.command(name="check", description="[Admin] เช็คสถานะ Iceberg")
+async def check_status(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("⛄ **Iceberg:** ยุ่งน่า! เฉพาะเจ้านาย Matthew!", ephemeral=True)
+        return
+
+    players = get_all_players()
+    if not players:
+        await interaction.response.send_message("📂 เงียบกริบ... ยังไม่มีใครเล่น", ephemeral=True)
+        return
+
+    report = "**📊 รายงาน Iceberg (Target 4-19)**\n"
+    count_success = 0
+    for row in players:
+        uid, att, target, comp = row
+        status = "✅ แตกแล้ว" if comp else f"🔨 {att}/{target}"
+        report += f"• <@{uid}> : {status}\n"
+        if comp: count_success += 1
+    
+    report += f"\n👥 ทั้งหมด: {len(players)} | 🎉 สำเร็จ: {count_success}"
+    await interaction.response.send_message(report, ephemeral=True)
+
+@iceberg_group.command(name="reset", description="[Admin] รีเซ็ต Iceberg ผู้เล่น")
+@app_commands.describe(member="เลือกคนที่จะรีเซ็ต")
+async def reset_user(interaction: discord.Interaction, member: discord.Member):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ เฉพาะ Admin", ephemeral=True)
+        return
+    
+    player = get_player(member.id)
+    if player:
+        delete_player(member.id)
+        await interaction.response.send_message(f"♻️ **Iceberg:** ลบข้อมูล {member.mention} แล้ว ให้เริ่มใหม่ได้เลย", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ หาไม่เจอ", ephemeral=True)
+
+client.tree.add_command(iceberg_group)
+
+# ==================================================================
+# ❄️ GROUP 2: SNOWFLAKE SNATCHER (เกมคว้าเกล็ดหิมะ)
+# ==================================================================
+snow_group = app_commands.Group(name="snowflake", description="ภารกิจคว้าเกล็ดหิมะ (ต้องเก็บให้ครบ 5 ชิ้น)")
+
+# --- CLASS ปุ่มกดสำหรับเกมจับหิมะ (วางไว้ตรงนี้เพื่อให้เรียกใช้ได้) ---
 class SnatchView(discord.ui.View):
     def __init__(self, user_id, time_limit):
-        super().__init__(timeout=time_limit) # ใช้เวลาที่ส่งเข้ามา
+        super().__init__(timeout=time_limit)
         self.user_id = user_id
         self.clicked = False
 
@@ -119,186 +330,6 @@ class SnatchView(discord.ui.View):
         await interaction.response.edit_message(view=self)
         self.stop()
 
-# ==========================================
-# ⛄ COMMAND 1: /iceberg start
-# ==========================================
-@iceberg_group.command(name="start", description="ส่งลิงก์รับภารกิจเพื่อเริ่มทุบน้ำแข็ง")
-@app_commands.describe(link="วางลิงก์โพสต์ที่โรลเพลย์รับภารกิจ")
-async def start(interaction: discord.Interaction, link: str):
-    user_id = interaction.user.id
-    player = get_player(user_id)
-    
-    # เช็คว่าเคยเริ่มหรือยัง (ดูจาก DB)
-    if player:
-        await interaction.response.send_message("⛄ **Iceberg:** โอ๊ยย! เอ็งลงชื่อไปแล้วนี่หว่า จะเริ่มใหม่อีกกี่รอบ? ไปใช้คำสั่ง `/iceberg submit` เพื่อทุบน้ำแข็งนู่น!", ephemeral=True)
-        return
-
-    # เช็คลิงก์
-    if not link.startswith(TARGET_URL):
-        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! ไปเอาลิงก์โพสต์ที่ถูกต้องมาส่งซะดีๆ", ephemeral=True)
-        return
-
-    # บันทึกข้อมูลลง DB
-    create_player(user_id, link)
-    
-    embed = discord.Embed(
-        title="⛄ Iceberg: \"หึ! กล้าดีนี่เจ้ามนุษย์...\"",
-        description=(
-            f"รับทราบ! รับปากแล้วนะว่าจะทุบ ทุบ ทุบ!\n"
-            "แต่บอกไว้ก่อนนะว่าก้อนน้ำแข็งมันแข็งงงงงงมาก!\n\n"
-            "**ภารกิจต่อจากนี้:**\n"
-            "1. ไปโรลเพลย์ทุบน้ำแข็ง หรือหาทางทำลายมัน\n"
-            "2. เอาลิงก์โพสต์มาส่งด้วยคำสั่ง `/iceberg submit`\n"
-            "3. ส่งมาเรื่อยๆ จนกว่ามันจะแตก... ถ้ามีความพยายามพออะนะ ฮ่าๆๆ!"
-        ),
-        color=0xa5f3fc 
-    )
-    embed.set_thumbnail(url="https://media.tenor.com/t2akJIhYv6QAAAAM/skibidi-snowmen.gif")
-    await interaction.response.send_message(embed=embed)
-
-
-# ==========================================
-# 🔨 COMMAND 2: /iceberg submit
-# ==========================================
-@iceberg_group.command(name="submit", description="ส่งลิงก์โรลเพลย์เพื่อทุบน้ำแข็ง")
-@app_commands.describe(link="วางลิงก์โพสต์ที่นี่")
-async def submit(interaction: discord.Interaction, link: str):
-    user_id = interaction.user.id
-    player = get_player(user_id) # ดึงข้อมูล: (attempts, completed, links_string)
-    
-    # Check Logic
-    if not player:
-        await interaction.response.send_message("⛄ **Iceberg:** เดี๋ยวก่อน! เห็นนะว่ายังไม่ได้ลงชื่อรับภารกิจเลย พิมพ์ `/iceberg start` พร้อมแนบลิงก์แรกมาก่อนเส้!", ephemeral=True)
-        return
-    
-    attempts, completed, links_str = player
-    links_list = json.loads(links_str) # แปลง JSON string กลับเป็น Python List
-    
-    if completed:
-        await interaction.response.send_message("⛄ **Iceberg:** พอได้แล้วโว้ย! มันแตกไปแล้ว จะทุบให้ตายเลยรึไง? ไปเรียกแมทธิวมารับเรื่องไป๊!", ephemeral=True)
-        return
-    if not link.startswith(TARGET_URL):
-        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์มั่วอีกละ! ไปเอาลิงก์โพสต์ดี ๆ มา!", ephemeral=True)
-        return
-    if link in links_list:
-        await interaction.response.send_message("⛄ **Iceberg:** ลิงก์นี้ทุบไปแล้ว! อย่ามาลักไก่ ไปโรลเพลย์มาใหม่เดี๋ยวนี้!", ephemeral=True)
-        return
-
-    # Process
-    links_list.append(link)
-    new_attempts = attempts + 1
-    
-    # RNG System
-    bonus = 10 if new_attempts > 5 else 0
-    chance = random.randint(1, 100) + bonus
-    
-    is_success = False
-
-    # --- กรณีสำเร็จ (SUCCESS) ---
-    if chance > 80: 
-        is_success = True
-        update_player_progress(user_id, new_attempts, True, links_list) # บันทึกว่าเสร็จแล้วลง DB
-        
-        success_msg = (
-            f"🎉 **ยอมแล้วววววววววววว**\n"
-            f"ทุบอยู่ได้ รำคาญโว้ยยยยยย!\n"
-            f"เอ้า! รับรางวัลไปเจ้ามนุษย์ <@{user_id}>\n\n"
-            f"📢 **เห้ยลูกพี่ <@{ADMIN_ID}> (Matthew)!**\n"
-            f"มาดูผลงานเร็ววว ข้าจะไปนอนต่อละ!"
-        )
-        
-        embed = discord.Embed(
-            title="🧊 เพล้งงงง! น้ำแข็งแตกกระจาย!",
-            description=success_msg,
-            color=0x4ade80
-        )
-        embed.set_image(url="https://iili.io/fqqod4S.png")
-        
-        await interaction.response.send_message(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed)
-
-    # --- กรณีล้มเหลว (FAIL) ---
-    else:
-        update_player_progress(user_id, new_attempts, False, links_list) # บันทึกความคืบหน้าลง DB
-
-        taunts = [
-            "🥱 **Iceberg:** ฮ้าววว... ตีแรงได้แค่นี้เหรอ? ยายข้างบ้านยังตีแรงกว่าเลย",
-            "🤣 **Iceberg:** ทุบหรือลูบ? น้ำแข็งข้ายังไม่รู้สึกอะไรเลยเนี่ย",
-            "🧊 **Iceberg:** บิ่นไปนิดนึง... นิดเดียวจริงๆ แบบต้องใช้กล้องจุลทรรศน์ส่องอะ",
-            "🤥 **Iceberg:** เหมือนจะได้นะ... (เสียงสูง) แต่ก็ไม่ได้ว่ะ ฮ่าๆๆ!",
-            "🥶 **Iceberg:** มือแข็งล่ะสิ? ไปผิงไฟก่อนไหมน้อง แล้วค่อยมาใหม่",
-            "🔨 **Iceberg:** เสียงดังฟังชัด แต่ดาเมจเป็นศูนย์! พยายามเข้านะจ๊ะ",
-            "👀 **Iceberg:** มองหน้าทำไม? ก็มันไม่แตกอะ จะให้บอกว่าแตกได้ไง?"
-        ]
-        chosen_taunt = random.choice(taunts)
-
-        embed = discord.Embed(
-            title=f"💥 โป๊ก! (ความพยายามครั้งที่ {new_attempts})",
-            description=chosen_taunt + "\n\n*อย่าเพิ่งท้อนะไอ้หนู ไปโรลมาใหม่!*",
-            color=0xef4444
-        )
-        await interaction.response.send_message(embed=embed)
-
-
-# ==========================================
-# 📋 COMMAND 3: /iceberg check (Admin Only)
-# ==========================================
-@iceberg_group.command(name="check", description="[Admin] เช็คสถานะลูกลูกน้องทั้งหมด")
-async def check_status(interaction: discord.Interaction):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("⛄ **Iceberg:** ยุ่งน่า! ข้าให้ดูแค่เจ้านาย Matthew คนเดียวเว้ย!", ephemeral=True)
-        return
-
-    players = get_all_players() # ดึงข้อมูลทั้งหมดจาก DB
-
-    if not players:
-        await interaction.response.send_message("📂 **Report:** เงียบกริบ... ยังไม่มีใครกล้ามาแหยมกับข้าเลยลูกพี่", ephemeral=True)
-        return
-
-    report = "**📊 รายงานสถานะ Iceberg Mission (SQLite)**\n-----------------------------------\n"
-    count_success = 0
-    
-    for row in players:
-        # row = (user_id, attempts, completed)
-        uid, attempts, completed = row
-        status_icon = "✅ แตกแล้ว" if completed else "🔨 กำลังนัว"
-        user_mention = f"<@{uid}>"
-        report += f"• {user_mention} : ทุบ {attempts} ครั้ง [{status_icon}]\n"
-        
-        if completed: count_success += 1
-    
-    report += f"\n-----------------------------------\n👥 ทั้งหมด: {len(players)} คน | 🎉 สำเร็จ: {count_success} คน"
-    
-    embed = discord.Embed(description=report, color=0xfacc15)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# ==========================================
-# 🔄 COMMAND 4: /iceberg reset (Admin Only)
-# ==========================================
-@iceberg_group.command(name="reset", description="[Admin] รีเซ็ตคนกากให้เริ่มใหม่")
-@app_commands.describe(member="เลือกคนที่จะรีเซ็ต")
-async def reset_user(interaction: discord.Interaction, member: discord.Member):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ ไม่ใช่แอดมินห้ามยุ่ง!", ephemeral=True)
-        return
-
-    # เช็คก่อนว่ามีไหม
-    player = get_player(member.id)
-    if player:
-        delete_player(member.id) # ลบจาก DB
-        await interaction.response.send_message(f"♻️ **Iceberg:** จัดไปครับลูกพี่! ลบข้อมูลเจ้า {member.mention} ออกจาก Database แล้ว ให้มันมาเริ่มใหม่ตั้งแต่ต้นเลย!", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"⚠️ **Iceberg:** หาไม่เจอว่ะครับ {member.mention} มันเคยมาเล่นด้วยเหรอ?", ephemeral=True)
-
-# Add Group เข้าสู่ Tree
-client.tree.add_command(iceberg_group)
-
-# ==================================================================
-# ❄️ NEW GROUP: SNOWFLAKE SNATCHER (เกมคว้าเกล็ดหิมะ)
-# ==================================================================
-snow_group = app_commands.Group(name="snowflake", description="ภารกิจคว้าเกล็ดหิมะ (ต้องเก็บให้ครบ 5 ชิ้น)")
-
-# 1. เริ่มต้นภารกิจ
 @snow_group.command(name="start", description="รับภารกิจสะสมเกล็ดหิมะ")
 @app_commands.describe(link="วางลิงก์โพสต์แรกเพื่อเริ่มงาน")
 async def snow_start(interaction: discord.Interaction, link: str):
@@ -329,14 +360,12 @@ async def snow_start(interaction: discord.Interaction, link: str):
     )
     await interaction.response.send_message(embed=embed)
 
-# 2. เล่นเกมคว้าหิมะ
 @snow_group.command(name="snatch", description="ส่งลิงก์แล้วรอกดปุ่มคว้าหิมะ!")
 @app_commands.describe(link="วางลิงก์โรลเพลย์ล่าสุด")
 async def snow_snatch(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
     player = get_snow_player(user_id) # (count, completed, links)
 
-    # --- Check Logic ---
     if not player:
         await interaction.response.send_message("⚠️ รับภารกิจก่อนครับ พิมพ์ `/snowflake start`", ephemeral=True)
         return
@@ -357,33 +386,22 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
     # --- Game Start ---
     await interaction.response.defer() 
 
-    # 1. ข้อความหลอกล่อ
     embed_wait = discord.Embed(title="👀 กำลังเพ่งมองท้องฟ้า...", description="รอก่อนนะ... อย่าเพิ่งกะพริบตา...", color=0x95a5a6)
     original_msg = await interaction.followup.send(embed=embed_wait)
 
-    # 2. สุ่มเวลาหน่วง (2-5 วินาที) - เพื่อให้คนกดเดาจังหวะไม่ได้
     await asyncio.sleep(random.uniform(2, 5))
 
-    # 3. คำนวณความยาก (DIFFICULTY SCALING)
-    # Count: 0 -> เวลา 3.0 วิ (ง่าย)
-    # Count: 1 -> เวลา 2.5 วิ
-    # Count: 2 -> เวลา 2.0 วิ
-    # Count: 3 -> เวลา 1.5 วิ
-    # Count: 4 -> เวลา 1.0 วิ (ยากมาก! รอบสุดท้าย)
+    # Difficulty Scaling
     time_limit = 3.0 - (count * 0.5) 
-    if time_limit < 0.8: time_limit = 0.8 # กันเหนียวไม่ให้น้อยกว่า 0.8 วิ (เดี๋ยวเน็ตแลคแล้วกดไม่ติด)
+    if time_limit < 0.8: time_limit = 0.8 
 
-    # 4. ปุ่มโผล่! พร้อมเวลาที่กำหนด
     view = SnatchView(user_id, time_limit)
     embed_now = discord.Embed(title="❄️ ร่วงลงมาแล้ว!!", description=f"**กดปุ่มเดี๋ยวนี้!!** (เวลา {time_limit} วินาที)", color=0x2ecc71)
     await interaction.edit_original_response(embed=embed_now, view=view)
 
-    # 5. รอผลการกด
     await view.wait()
 
-    # --- สรุปผล ---
     if view.clicked:
-        # ชนะ: อัปเดตข้อมูล
         links_list.append(link)
         new_count = count + 1
         is_finished = (new_count >= 5)
@@ -391,37 +409,20 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
         update_snow_progress(user_id, new_count, is_finished, links_list)
 
         if is_finished:
-            # เก็บครบ 5 อัน
             embed_win = discord.Embed(
                 title="💎 MISSION COMPLETE!",
-                description=(
-                    f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\n"
-                    f"รอบสุดท้ายโหดมากแต่คุณก็ทำได้!\n"
-                    f"ยินดีด้วยครับ <@{user_id}>\n\n"
-                    f"📢 <@{ADMIN_ID}> มารับของหน่อยครับ!"
-                ),
+                description=f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\nยินดีด้วยครับ <@{user_id}>\n\n📢 <@{ADMIN_ID}> มารับของหน่อยครับ!",
                 color=0xf1c40f
             )
-            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png") # อย่าลืมเปลี่ยนรูปรวม
+            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png") # ใส่รูปรางวัล
             await interaction.followup.send(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed_win)
         else:
-            # เก็บได้แต่ยังไม่ครบ
-            await interaction.followup.send(
-                f"✅ **คว้าทัน!** (สะสม: {new_count}/5)\n"
-                f"เก่งมาก! แต่รอบหน้าจะเร็วกว่านี้นะ... ไปโรลเพลย์หาชิ้นต่อไปมา!"
-            )
+            await interaction.followup.send(f"✅ **คว้าทัน!** (สะสม: {new_count}/5)\nเก่งมาก! ไปโรลเพลย์หาชิ้นต่อไปมา!")
     else:
-        # แพ้ (กดไม่ทัน / หมดเวลา)
-        await interaction.followup.send(
-            f"💨 **ว้า... พลาด!**\n"
-            f"เกล็ดหิมะละลายไปแล้ว (รอบนี้เวลาแค่ {time_limit} วิ เอง!)\n"
-            f"(ลิงก์นี้ถือว่าใช้ไปแล้วนะ ต้องไปโรลเพลย์ใหม่มาแก้ตัว!)"
-        )
-        # บันทึกลิงก์ว่าใช้ไปแล้ว แม้จะแพ้ (เพื่อกันเอาลิงก์เดิมมาสแปม)
         links_list.append(link)
         update_snow_progress(user_id, count, False, links_list)
+        await interaction.followup.send(f"💨 **ว้า... พลาด!**\nเกล็ดหิมะละลายไปแล้ว (เวลา {time_limit} วิ)\n(ลิงก์นี้ถือว่าใช้ไปแล้วนะ ต้องไปโรลใหม่!)")
 
-# 3. เช็คสถานะ (Admin)
 @snow_group.command(name="check", description="[Admin] เช็คยอดเกล็ดหิมะ")
 async def snow_check(interaction: discord.Interaction):
     if interaction.user.id != ADMIN_ID:
@@ -437,16 +438,191 @@ async def snow_check(interaction: discord.Interaction):
         await interaction.response.send_message("ยังไม่มีใครเล่นครับ", ephemeral=True)
         return
 
-    report = "**📊 รายงานภารกิจ Snowflake**\n"
+    report = "**📊 รายงาน Snowflake**\n"
     for row in players:
         uid, cnt, comp = row
-        status = "✅ ครบแล้ว" if comp else f"❄️ {cnt}/5"
+        status = "✅ ครบ" if comp else f"❄️ {cnt}/5"
         report += f"• <@{uid}> : {status}\n"
-        
     await interaction.response.send_message(report, ephemeral=True)
 
-# --- เพิ่ม Group เข้า Tree (บรรทัดนี้สำคัญมาก ห้ามลืม!) ---
+@snow_group.command(name="reset", description="[Admin] รีเซ็ต Snowflake ผู้เล่น")
+@app_commands.describe(member="เลือกคนที่จะรีเซ็ต")
+async def snow_reset(interaction: discord.Interaction, member: discord.Member):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ เฉพาะ Admin", ephemeral=True)
+        return
+    
+    player = get_snow_player(member.id)
+    if player:
+        delete_snow_player(member.id)
+        await interaction.response.send_message(f"♻️ **Snowflake:** รีเซ็ตข้อมูล {member.mention} เรียบร้อย", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ ไม่พบข้อมูล", ephemeral=True)
+
+
+# ==================================================================
+# 🗝️ GROUP 3: VAULT (ภารกิจคู่หู - ทนความหนาว)
+# ==================================================================
+vault_group = app_commands.Group(name="vault", description="ภารกิจคู่หู: เปิดตู้นิรภัยน้ำแข็ง")
+
+@vault_group.command(name="create", description="จับคู่สร้างทีมเพื่อเริ่มภารกิจ")
+@app_commands.describe(partner="แท็กคู่หูของคุณ")
+async def vault_create(interaction: discord.Interaction, partner: discord.Member):
+    user1 = interaction.user
+    user2 = partner
+
+    if user1.id == user2.id:
+        await interaction.response.send_message("❌ จับคู่กับตัวเองไม่ได้ครับ! ต้องหาเพื่อน", ephemeral=True)
+        return
+    if user2.bot:
+        await interaction.response.send_message("❌ จับคู่กับบอทไม่ได้ครับ", ephemeral=True)
+        return
+
+    # เช็คว่าใครคนใดคนหนึ่งมีทีมอยู่แล้วรึเปล่า
+    team1 = get_vault_team(user1.id)
+    team2 = get_vault_team(user2.id)
+
+    if team1 or team2:
+        await interaction.response.send_message("⚠️ คุณหรือคู่หูของคุณมีทีมอยู่แล้ว! ต้อง `/vault reset` ของเก่าก่อน", ephemeral=True)
+        return
+
+    # --- สร้างทีม & สุ่ม Target (4-19 ครั้ง) ---
+    target_attempts = random.randint(4, 19)
+    warmer_id, turner_id = create_vault_team(user1.id, user2.id, target_attempts)
+    
+    # กำหนด Role text
+    role_msg = ""
+    if warmer_id == user1.id:
+        role_msg = f"🔥 **Warmer (คนละลาย):** {user1.mention}\n🔑 **Turner (คนไข):** {user2.mention}"
+    else:
+        role_msg = f"🔥 **Warmer (คนละลาย):** {user2.mention}\n🔑 **Turner (คนไข):** {user1.mention}"
+
+    embed = discord.Embed(
+        title="❄️ Vault Team Created: ภารกิจทนความหนาว",
+        description=(
+            f"จับคู่สำเร็จ! ระหว่าง {user1.mention} และ {user2.mention}\n\n"
+            f"**บทบาทของคุณ:**\n{role_msg}\n\n"
+            "**กติกา:**\n"
+            "1. **Warmer:** โรลเพลย์ใช้ไออุ่นร่างกาย/ลมหายใจ ห้ามใช้ไฟ!\n"
+            "2. **Turner:** โรลเพลย์ออกแรงบิดกุญแจ\n"
+            "3. ทั้งคู่ต้องโรลเพลย์ แล้วนำลิงก์มาส่งด้วย `/vault submit` (ใครส่งก็ได้)\n"
+            "4. ระบบจะสุ่ม % ความสำเร็จ... ต้องทำให้ถึง 100% ถึงจะเปิดออก!\n"
+            "5. ยิ่งนาน... ยิ่งหนาว... เตรียมบรรยายความทรมานไว้ด้วยล่ะ!"
+        ),
+        color=0x9b59b6 # สีม่วง
+    )
+    await interaction.response.send_message(content=f"{user1.mention} {user2.mention}", embed=embed)
+
+@vault_group.command(name="submit", description="ส่งลิงก์ภารกิจคู่หู")
+@app_commands.describe(link="วางลิงก์โพสต์ของทีม")
+async def vault_submit(interaction: discord.Interaction, link: str):
+    user_id = interaction.user.id
+    team_data = get_vault_team(user_id)
+
+    # Check Logic
+    if not team_data:
+        await interaction.response.send_message("⚠️ คุณยังไม่มีทีม! ใช้ `/vault create @เพื่อน` ก่อน", ephemeral=True)
+        return
+    
+    # Unpack Data (team_id, u1, u2, r_warm, r_turn, att, target, comp, links)
+    team_id, u1, u2, r_warm, r_turn, attempts, target, completed, links_str = team_data
+    links_list = json.loads(links_str)
+
+    if completed:
+        await interaction.response.send_message("✅ ทีมนี้เปิดตู้สำเร็จไปแล้วครับ!", ephemeral=True)
+        return
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message("❌ ลิงก์ไม่ถูกต้อง", ephemeral=True)
+        return
+    if link in links_list:
+        await interaction.response.send_message("⚠️ ลิงก์นี้ส่งไปแล้ว! ห้ามลักไก่", ephemeral=True)
+        return
+
+    # Process
+    links_list.append(link)
+    new_attempts = attempts + 1
+    
+    # --- Logic คำนวณความสำเร็จ ---
+    # เราจะไม่บอก Target จริง แต่จะบอกเป็น % ความคืบหน้า
+    # สูตร: (จำนวนครั้งปัจจุบัน / เป้าหมาย) * 100
+    # แต่ต้องไม่ให้เกิน 99% ถ้ายังไม่ถึง target
+    
+    is_success = new_attempts >= target
+    
+    if is_success:
+        progress_percent = 100
+        update_vault_progress(team_id, new_attempts, True, links_list)
+        
+        success_embed = discord.Embed(
+            title="🔓 VAULT UNLOCKED! (100%)",
+            description=(
+                f"**Success!** ตู้นิรภัยเปิดออกแล้ว!\n"
+                f"หลังจากทนหนาวกันมา {new_attempts} รอบ... ความอบอุ่นของพวกคุณก็เอาชนะน้ำแข็งได้\n\n"
+                f"🎉 ยินดีด้วย: <@{u1}> และ <@{u2}>\n"
+                f"📢 <@{ADMIN_ID}> มารับของรางวัลครับ!"
+            ),
+            color=0x4ade80
+        )
+        await interaction.response.send_message(content=f"<@{u1}> <@{u2}> <@{ADMIN_ID}>", embed=success_embed)
+        
+    else:
+        # คำนวณ % หลอกๆ (Progress Bar)
+        raw_percent = int((new_attempts / target) * 100)
+        # สุ่ม Variation นิดหน่อยไม่ให้เลขเป๊ะเกินไป (แต่ห้ามเกิน 95)
+        display_percent = min(raw_percent + random.randint(-5, 5), 95) 
+        if display_percent < 5: display_percent = 5 # ขั้นต่ำ 5%
+        
+        update_vault_progress(team_id, new_attempts, False, links_list)
+        
+        fail_embed = discord.Embed(
+            title=f"❄️ Status: FROZEN ({display_percent}%)",
+            description=(
+                f"ความพยายามครั้งที่: **{new_attempts}**\n"
+                f"น้ำแข็งละลายไปบ้างแล้ว... แต่กลไกยังติดขัดอยู่!\n\n"
+                f"🥶 **สถานการณ์:** อากาศเย็นลงเรื่อยๆ มือเริ่มชา...\n"
+                f"**สิ่งที่ต้องทำ:** โรลเพลย์บรรยายความหนาวที่เพิ่มขึ้น แล้วลองใหม่อีกครั้ง!"
+            ),
+            color=0x3498db # สีฟ้าเข้ม
+        )
+        await interaction.response.send_message(embed=fail_embed)
+
+@vault_group.command(name="check", description="[Admin] เช็คทีม Vault ทั้งหมด")
+async def vault_check(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ เฉพาะ Admin", ephemeral=True)
+        return
+
+    vaults = get_all_vaults()
+    if not vaults:
+        await interaction.response.send_message("📂 ยังไม่มีทีม Vault", ephemeral=True)
+        return
+
+    report = "**📊 รายงาน Vault Teams (Target 4-19)**\n"
+    for row in vaults:
+        u1, u2, att, target, comp = row
+        status = "✅ Unlock" if comp else f"🔒 {att}/{target}"
+        report += f"• Team <@{u1}>+<@{u2}> : {status}\n"
+    
+    await interaction.response.send_message(report, ephemeral=True)
+
+@vault_group.command(name="reset", description="[Admin] ลบทีม Vault")
+@app_commands.describe(member="เลือกสมาชิกในทีมที่จะลบ (ใครก็ได้ในคู่)")
+async def vault_reset(interaction: discord.Interaction, member: discord.Member):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ เฉพาะ Admin", ephemeral=True)
+        return
+    
+    team_data = get_vault_team(member.id)
+    if team_data:
+        team_id = team_data[0] # index 0 is team_id
+        delete_vault_team(team_id)
+        await interaction.response.send_message(f"♻️ **Vault:** ลบทีมของ {member.mention} เรียบร้อย (คู่หูก็โดนลบด้วย)", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ สมาชิกคนนี้ไม่มีทีม", ephemeral=True)
+
+# Add Groups to Tree
 client.tree.add_command(snow_group)
+client.tree.add_command(vault_group)
 
 # Run Bot
 client.run(TOKEN)
