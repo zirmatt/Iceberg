@@ -6,8 +6,9 @@ import os
 # --- CONFIGURATION ---
 TOKEN = os.getenv('DISCORD_TOKEN') 
 TARGET_URL = "https://roleplayth.com/showthread.php?tid="
-ADMIN_ID = 432415629245415426  # <-- ID ของ Admin ที่คุณระบุมา
+ADMIN_ID = 432415629245415426  # ID ของ Matthew (Admin)
 
+# เก็บข้อมูลผู้เล่น
 player_data = {}
 
 class MyClient(discord.Client):
@@ -17,97 +18,174 @@ class MyClient(discord.Client):
 
     async def on_ready(self):
         await self.tree.sync()
-        print(f'Logged in as {self.user} (Ready!)')
+        print(f'Logged in as {self.user} (Iceberg is ready!)')
 
 client = MyClient()
 
-# --- COMMAND: เริ่มภารกิจ ---
-@client.tree.command(name="start_mission", description="เริ่มภารกิจถอดรหัส Cryptex")
-async def start_mission(interaction: discord.Interaction):
+# เปลี่ยนชื่อ Group Command เป็น "iceberg"
+iceberg_group = app_commands.Group(name="iceberg", description="มาทุบน้ำแข็งกับข้า! Iceberg")
+
+# ==========================================
+# ⛄ COMMAND 1: /iceberg start (เริ่ม + ส่งงานแรก)
+# ==========================================
+@iceberg_group.command(name="start", description="ส่งลิงก์รับภารกิจเพื่อเริ่มทุบน้ำแข็ง")
+@app_commands.describe(link="วางลิงก์โพสต์ที่โรลเพลย์รับภารกิจ")
+async def start(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
-    if user_id in player_data:
-        await interaction.response.send_message("⚠️ คุณได้รับภารกิจไปแล้วครับ!", ephemeral=True)
-        return
     
-    # สร้างข้อมูลผู้เล่น
-    player_data[user_id] = {'attempts': 0, 'completed': False, 'links': []}
+    # เช็คว่าเคยเริ่มหรือยัง
+    if user_id in player_data:
+        await interaction.response.send_message("⛄ **Iceberg:** โอ๊ยย! เอ็งลงชื่อไปแล้วนี่หว่า จะเริ่มใหม่อีกกี่รอบ? ไปใช้คำสั่ง `/iceberg submit` เพื่อทุบน้ำแข็งนู่น!", ephemeral=True)
+        return
+
+    # เช็คลิงก์ (ต้องถูกต้องตามกฎ)
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! ไปเอาลิงก์โพสต์ที่ถูกต้องมาส่งซะดีๆ", ephemeral=True)
+        return
+
+    # บันทึกข้อมูลเริ่มต้น (นับเป็นลิงก์แรก แต่ยังไม่ใช่การทุบ)
+    player_data[user_id] = {'attempts': 0, 'completed': False, 'links': [link]}
     
     embed = discord.Embed(
-        title="❄️ ภารกิจ: The Frozen Cryptex",
-        description="เริ่มภารกิจแล้ว! ใช้คำสั่ง `/submit_post` เพื่อส่งลิงก์โรลเพลย์ของคุณ",
-        color=0x38bdf8
+        title="⛄ Iceberg: \"หึ! กล้าดีนี่เจ้ามนุษย์...\"",
+        description=(
+            f"รับทราบ! รับปากแล้วนะว่าจะทุบ ทุบ ทุบ!\n"
+            "แต่บอกไว้ก่อนนะว่าก้อนน้ำแข็งมันแข็งงงงงงมาก!\n\n"
+            "**ภารกิจต่อจากนี้:**\n"
+            "1. ไปโรลเพลย์ทุบน้ำแข็ง หรือหาทางทำลายมัน\n"
+            "2. เอาลิงก์โพสต์มาส่งด้วยคำสั่ง `/iceberg submit`\n"
+            "3. ส่งมาเรื่อยๆ จนกว่ามันจะแตก... ถ้ามีความพยายามพออะนะ ฮ่าๆๆ!"
+        ),
+        color=0xa5f3fc # สีฟ้าอ่อน
     )
+    # แนบ Gif กวนๆ หรือรูป Iceberg
+    embed.set_thumbnail(url="https://media.tenor.com/t2akJIhYv6QAAAAM/skibidi-snowmen.gif")
+    
     await interaction.response.send_message(embed=embed)
 
-# --- COMMAND: ส่งงาน ---
-@client.tree.command(name="submit_post", description="ส่งลิงก์โรลเพลย์")
-@app_commands.describe(link="วางลิงก์โพสต์ roleplayth")
-async def submit_post(interaction: discord.Interaction, link: str):
+
+# ==========================================
+# 🔨 COMMAND 2: /iceberg submit (ส่งลิงก์ทุบ)
+# ==========================================
+@iceberg_group.command(name="submit", description="ส่งลิงก์โรลเพลย์เพื่อทุบน้ำแข็ง")
+@app_commands.describe(link="วางลิงก์โพสต์ที่นี่")
+async def submit(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
     
+    # Check Logic
     if user_id not in player_data:
-        await interaction.response.send_message("❌ พิมพ์ `/start_mission` ก่อนครับ", ephemeral=True)
+        await interaction.response.send_message("⛄ **Iceberg:** เดี๋ยวก่อน! เห็นนะว่ายังไม่ได้ลงชื่อรับภารกิจเลย พิมพ์ `/iceberg start` พร้อมแนบลิงก์แรกมาก่อนเส้!", ephemeral=True)
         return
     if player_data[user_id]['completed']:
-        await interaction.response.send_message("🎉 คุณผ่านภารกิจไปแล้วครับ!", ephemeral=True)
+        await interaction.response.send_message("⛄ **Iceberg:** พอได้แล้วโว้ย! มันแตกไปแล้ว จะทุบให้ตายเลยรึไง? ไปเรียกแมทธิวมารับเรื่องไป๊!", ephemeral=True)
         return
     if not link.startswith(TARGET_URL):
-        await interaction.response.send_message(f"❌ ลิงก์ต้องขึ้นต้นด้วย `{TARGET_URL}`", ephemeral=True)
+        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์มั่วอีกละ! ไปเอาลิงก์โพสต์ดี ๆ มา!", ephemeral=True)
         return
     if link in player_data[user_id]['links']:
-        await interaction.response.send_message("⚠️ ลิงก์ซ้ำ! ห้ามส่งลิงก์เดิมนะครับ", ephemeral=True)
+        await interaction.response.send_message("⛄ **Iceberg:** ลิงก์นี้ทุบไปแล้ว! อย่ามาลักไก่ ไปโรลเพลย์มาใหม่เดี๋ยวนี้!", ephemeral=True)
         return
 
-    # บันทึกข้อมูล
+    # Process
     player_data[user_id]['links'].append(link)
     player_data[user_id]['attempts'] += 1
     attempts = player_data[user_id]['attempts']
     
-    # Logic คำนวณผล (Pity System)
+    # RNG System
     bonus = 10 if attempts > 5 else 0
     chance = random.randint(1, 100) + bonus
     
-    if chance > 80: # ปรับความยากง่ายตรงนี้ (80 = ผ่านยาก)
+    # --- กรณีสำเร็จ (SUCCESS) ---
+    if chance > 80: 
         player_data[user_id]['completed'] = True
-        code = f"KEY-{random.randint(1000,9999)}-{user_id}"
+        
+        success_msg = (
+            f"🎉 **ยอมแล้วววววววววววว**\n"
+            f"ทุบอยู่ได้ รำคาญโว้ยยยยยย!\n"
+            f"เอ้า! รับรางวัลไปเจ้ามนุษย์ <@{user_id}>\n\n"
+            f"📢 **เห้ยลูกพี่ <@{ADMIN_ID}> (Matthew)!**\n"
+            f"มาดูผลงานเร็ววว ข้าจะไปนอนต่อละ!"
+        )
         
         embed = discord.Embed(
-            title="🔓 CRITICAL SUCCESS! กลไกปลดล็อค!",
-            description=f"**ความพยายามครั้งที่: {attempts}**\n\nยินดีด้วย! กลไก Cryptex เปิดออกแล้ว\n🎫 **Code:** `{code}`",
-            color=0x4ade80
+            title="🧊 เพล้งงงง! น้ำแข็งแตกกระจาย!",
+            description=success_msg,
+            color=0x4ade80 # สีเขียว
         )
-        await interaction.response.send_message(embed=embed)
+        embed.set_image(url="https://iili.io/fqqod4S.png") # รูปตอนจบ
+        
+        await interaction.response.send_message(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed)
+
+    # --- กรณีล้มเหลว (FAIL) ---
     else:
+        # สุ่มคำบ่นของ Iceberg
+        taunts = [
+            "🥱 **Iceberg:** ฮ้าววว... ตีแรงได้แค่นี้เหรอ? ยายข้างบ้านยังตีแรงกว่าเลย",
+            "🤣 **Iceberg:** ทุบหรือลูบ? น้ำแข็งข้ายังไม่รู้สึกอะไรเลยเนี่ย",
+            "🧊 **Iceberg:** บิ่นไปนิดนึง... นิดเดียวจริงๆ แบบต้องใช้กล้องจุลทรรศน์ส่องอะ",
+            "🤥 **Iceberg:** เหมือนจะได้นะ... (เสียงสูง) แต่ก็ไม่ได้ว่ะ ฮ่าๆๆ!",
+            "🥶 **Iceberg:** มือแข็งล่ะสิ? ไปผิงไฟก่อนไหมน้อง แล้วค่อยมาใหม่",
+            "🔨 **Iceberg:** เสียงดังฟังชัด แต่ดาเมจเป็นศูนย์! พยายามเข้านะจ๊ะ",
+            "👀 **Iceberg:** มองหน้าทำไม? ก็มันไม่แตกอะ จะให้บอกว่าแตกได้ไง?"
+        ]
+        chosen_taunt = random.choice(taunts)
+
         embed = discord.Embed(
-            title="❄️ FAILED... ยังเปิดไม่ออก",
-            description=f"**ความพยายามครั้งที่: {attempts}**\n\nน้ำแข็งยังเกาะแน่นอยู่... ลองโรลเพลย์ใหม่อีกครั้งนะ",
-            color=0xef4444
+            title=f"💥 โป๊ก! (ความพยายามครั้งที่ {attempts})",
+            description=chosen_taunt + "\n\n*อย่าเพิ่งท้อนะไอ้หนู ไปโรลมาใหม่!*",
+            color=0xef4444 # สีแดง
         )
         await interaction.response.send_message(embed=embed)
 
-# --- COMMAND: Admin Reset (เพิ่มใหม่) ---
-@client.tree.command(name="admin_reset", description="[Admin Only] รีเซ็ตภารกิจของผู้เล่นให้เริ่มใหม่ได้")
-@app_commands.describe(member="เลือกผู้เล่นที่ต้องการรีเซ็ต")
-async def admin_reset(interaction: discord.Interaction, member: discord.Member):
-    # 1. เช็คว่าเป็น Admin หรือไม่
+
+# ==========================================
+# 📋 COMMAND 3: /iceberg check (Admin Only)
+# ==========================================
+@iceberg_group.command(name="check", description="[Admin] เช็คสถานะลูกลูกน้องทั้งหมด")
+async def check_status(interaction: discord.Interaction):
     if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ คุณไม่มีสิทธิ์ใช้คำสั่งนี้ครับ (เฉพาะ Admin)", ephemeral=True)
+        await interaction.response.send_message("⛄ **Iceberg:** ยุ่งน่า! ข้าให้ดูแค่เจ้านาย Matthew คนเดียวเว้ย!", ephemeral=True)
         return
 
-    target_id = member.id
-    
-    # 2. เช็คว่าผู้เล่นคนนี้มีข้อมูลในระบบไหม
-    if target_id in player_data:
-        # ลบข้อมูลออก เพื่อให้เริ่มใหม่ได้
-        del player_data[target_id]
-        
-        embed = discord.Embed(
-            title="🔄 Mission Reset",
-            description=f"ล้างข้อมูลภารกิจของ {member.mention} เรียบร้อยแล้ว\nเขาสามารถเริ่ม `/start_mission` ใหม่ได้ทันที",
-            color=0xfacc15 # สีเหลือง
-        )
-        await interaction.response.send_message(embed=embed)
-    else:
-        await interaction.response.send_message(f"⚠️ ไม่พบข้อมูลของผู้เล่น {member.mention} ในระบบ", ephemeral=True)
+    if not player_data:
+        await interaction.response.send_message("📂 **Report:** เงียบกริบ... ยังไม่มีใครกล้ามาแหยมกับข้าเลยลูกพี่", ephemeral=True)
+        return
 
+    report = "**📊 รายงานสถานะ Iceberg Mission**\n-----------------------------------\n"
+    count_success = 0
+    
+    for uid, data in player_data.items():
+        status_icon = "✅ แตกแล้ว" if data['completed'] else "🔨 กำลังนัว"
+        user_mention = f"<@{uid}>"
+        attempts = data['attempts']
+        report += f"• {user_mention} : ทุบ {attempts} ครั้ง [{status_icon}]\n"
+        
+        if data['completed']: count_success += 1
+    
+    report += f"\n-----------------------------------\n👥 ทั้งหมด: {len(player_data)} คน | 🎉 สำเร็จ: {count_success} คน"
+    
+    embed = discord.Embed(description=report, color=0xfacc15)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ==========================================
+# 🔄 COMMAND 4: /iceberg reset (Admin Only)
+# ==========================================
+@iceberg_group.command(name="reset", description="[Admin] รีเซ็ตคนกากให้เริ่มใหม่")
+@app_commands.describe(member="เลือกคนที่จะรีเซ็ต")
+async def reset_user(interaction: discord.Interaction, member: discord.Member):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ ไม่ใช่แอดมินห้ามยุ่ง!", ephemeral=True)
+        return
+
+    if member.id in player_data:
+        del player_data[member.id]
+        await interaction.response.send_message(f"♻️ **Iceberg:** จัดไปครับลูกพี่! ลบข้อมูลเจ้า {member.mention} ให้แล้ว ให้มันมาเริ่มใหม่ตั้งแต่ต้นเลย!", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ **Iceberg:** หาไม่เจอว่ะครับ {member.mention} มันเคยมาเล่นด้วยเหรอ?", ephemeral=True)
+
+# Add Group เข้าสู่ Tree
+client.tree.add_command(iceberg_group)
+
+# Run Bot
 client.run(TOKEN)
