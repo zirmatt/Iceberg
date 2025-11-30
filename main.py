@@ -4,6 +4,7 @@ import random
 import os
 import sqlite3
 import json
+import asyncio
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv('DISCORD_TOKEN') 
@@ -21,6 +22,14 @@ def init_db():
             CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
                 attempts INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                links TEXT DEFAULT '[]'
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS snowflakes (
+                user_id INTEGER PRIMARY KEY,
+                count INTEGER DEFAULT 0,
                 completed INTEGER DEFAULT 0,
                 links TEXT DEFAULT '[]'
             )
@@ -59,6 +68,23 @@ def get_all_players():
         cursor.execute("SELECT user_id, attempts, completed FROM players")
         return cursor.fetchall()
 
+def get_snow_player(user_id):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT count, completed, links FROM snowflakes WHERE user_id = ?", (user_id,))
+        return cursor.fetchone()
+
+def create_snow_player(user_id, link):
+    with sqlite3.connect(DB_NAME) as conn:
+        links_json = json.dumps([link])
+        conn.execute("INSERT INTO snowflakes (user_id, count, completed, links) VALUES (?, 0, 0, ?)", (user_id, links_json))
+
+def update_snow_progress(user_id, count, completed, links_list):
+    with sqlite3.connect(DB_NAME) as conn:
+        links_json = json.dumps(links_list)
+        conn.execute("UPDATE snowflakes SET count = ?, completed = ?, links = ? WHERE user_id = ?", 
+                     (count, 1 if completed else 0, links_json, user_id))
+
 # --- BOT SETUP ---
 class MyClient(discord.Client):
     def __init__(self):
@@ -73,6 +99,25 @@ class MyClient(discord.Client):
 client = MyClient()
 
 iceberg_group = app_commands.Group(name="iceberg", description="มาทุบน้ำแข็งกับข้า! Iceberg")
+
+# --- CLASS ปุ่มกดสำหรับเกมจับหิมะ ---
+class SnatchView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=3.0) # มีเวลาให้กดแค่ 3 วินาทีหลังจากปุ่มโผล่
+        self.user_id = user_id
+        self.clicked = False
+
+    @discord.ui.button(label="❄️ คว้าเลย!", style=discord.ButtonStyle.success)
+    async def grab_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("ไม่ใช่เกมของเอ็ง อย่ามาแย่ง!", ephemeral=True)
+            return
+        
+        self.clicked = True
+        button.disabled = True
+        button.label = "คว้าทัน!"
+        await interaction.response.edit_message(view=self)
+        self.stop()
 
 # ==========================================
 # ⛄ COMMAND 1: /iceberg start
@@ -247,6 +292,152 @@ async def reset_user(interaction: discord.Interaction, member: discord.Member):
 
 # Add Group เข้าสู่ Tree
 client.tree.add_command(iceberg_group)
+
+# ==================================================================
+# ❄️ NEW GROUP: SNOWFLAKE SNATCHER (เกมคว้าเกล็ดหิมะ)
+# ==================================================================
+snow_group = app_commands.Group(name="snowflake", description="ภารกิจคว้าเกล็ดหิมะ (ต้องเก็บให้ครบ 5 ชิ้น)")
+
+# 1. เริ่มต้นภารกิจ
+@snow_group.command(name="start", description="รับภารกิจสะสมเกล็ดหิมะ")
+@app_commands.describe(link="วางลิงก์โพสต์แรกเพื่อเริ่มงาน")
+async def snow_start(interaction: discord.Interaction, link: str):
+    user_id = interaction.user.id
+    player = get_snow_player(user_id)
+
+    if player:
+        await interaction.response.send_message("❄️ **Matthew:** คุณรับงานนี้ไปแล้วครับ เริ่มสะสมด้วยคำสั่ง `/snowflake snatch` ได้เลย", ephemeral=True)
+        return
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message(f"❌ ลิงก์ไม่ถูกต้องครับ", ephemeral=True)
+        return
+
+    create_snow_player(user_id, link)
+    
+    embed = discord.Embed(
+        title="❄️ ภารกิจ: Snowflake Collector",
+        description=(
+            f"สวัสดีคุณ **{interaction.user.name}** ผมต้องการ **เกล็ดหิมะสมบูรณ์ 5 ชิ้น**\n"
+            "มันจะตกลงมาเร็วมาก คุณต้องตาไวหน่อยนะ\n\n"
+            "**วิธีเล่น:**\n"
+            "1. โรลเพลย์เดินหาจุดที่หิมะตก\n"
+            "2. มาพิมพ์ `/snowflake snatch [ลิงก์]`\n"
+            "3. รอจังหวะ... พอปุ่มสีเขียวเด้งขึ้นมา ให้รีบกด **'คว้าเลย!'** ให้ทัน\n"
+            "4. ทำให้ครบ 5 ครั้ง แล้วมารรับรางวัล"
+        ),
+        color=0xffffff
+    )
+    await interaction.response.send_message(embed=embed)
+
+# 2. เล่นเกมคว้าหิมะ
+@snow_group.command(name="snatch", description="ส่งลิงก์แล้วรอกดปุ่มคว้าหิมะ!")
+@app_commands.describe(link="วางลิงก์โรลเพลย์ล่าสุด")
+async def snow_snatch(interaction: discord.Interaction, link: str):
+    user_id = interaction.user.id
+    player = get_snow_player(user_id) # (count, completed, links)
+
+    # --- Check Logic ---
+    if not player:
+        await interaction.response.send_message("⚠️ รับภารกิจก่อนครับ พิมพ์ `/snowflake start`", ephemeral=True)
+        return
+    
+    count, completed, links_str = player
+    links_list = json.loads(links_str)
+
+    if completed:
+        await interaction.response.send_message("🎉 คุณเก็บครบ 5 ชิ้นไปแล้วครับ! พักผ่อนเถอะ", ephemeral=True)
+        return
+    if not link.startswith(TARGET_URL):
+        await interaction.response.send_message("❌ ลิงก์ผิดครับ", ephemeral=True)
+        return
+    if link in links_list:
+        await interaction.response.send_message("⚠️ ลิงก์ซ้ำ! ต้องโรลเพลย์ใหม่นะครับ", ephemeral=True)
+        return
+
+    # --- Game Start ---
+    # ใช้ defer เพราะเกมนี้ต้องรอนานกว่า 3 วินาที (รอจังหวะหลอก)
+    await interaction.response.defer() 
+
+    # 1. ข้อความหลอกล่อ
+    embed_wait = discord.Embed(title="👀 กำลังเพ่งมองท้องฟ้า...", description="รอก่อนนะ... อย่าเพิ่งกะพริบตา...", color=0x95a5a6)
+    original_msg = await interaction.followup.send(embed=embed_wait)
+
+    # 2. สุ่มเวลาหน่วง (2-5 วินาที)
+    await asyncio.sleep(random.uniform(2, 5))
+
+    # 3. ปุ่มโผล่!
+    view = SnatchView(user_id)
+    embed_now = discord.Embed(title="❄️ ร่วงลงมาแล้ว!!", description="**กดปุ่มเดี๋ยวนี้!!**", color=0x2ecc71)
+    await interaction.edit_original_response(embed=embed_now, view=view)
+
+    # 4. รอผลการกด (Wait for view to stop or timeout)
+    await view.wait()
+
+    # --- สรุปผล ---
+    if view.clicked:
+        # ชนะ: อัปเดตข้อมูล
+        links_list.append(link)
+        new_count = count + 1
+        is_finished = (new_count >= 5)
+        
+        update_snow_progress(user_id, new_count, is_finished, links_list)
+
+        if is_finished:
+            # เก็บครบ 5 อัน
+            embed_win = discord.Embed(
+                title="💎 MISSION COMPLETE!",
+                description=(
+                    f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\n"
+                    f"ยินดีด้วยครับ <@{user_id}>\n\n"
+                    f"📢 <@{ADMIN_ID}> มารับของหน่อยครับ!"
+                ),
+                color=0xf1c40f
+            )
+            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png") # เปลี่ยนรูปรวมได้
+            await interaction.followup.send(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed_win)
+        else:
+            # เก็บได้แต่ยังไม่ครบ
+            await interaction.followup.send(
+                f"✅ **คว้าทัน!** (สะสม: {new_count}/5)\n"
+                f"เก่งมาก! รีบไปโรลเพลย์หาชิ้นต่อไป แล้วกลับมาใหม่นะ"
+            )
+    else:
+        # แพ้ (กดไม่ทัน / หมดเวลา)
+        await interaction.followup.send(
+            f"💨 **ว้า... หายไปแล้ว**\n"
+            f"คุณช้าไปนิดเดียว! เกล็ดหิมะละลายไปแล้ว\n"
+            f"(ลิงก์นี้ถือว่าใช้ไปแล้วนะ ต้องไปโรลเพลย์ใหม่มาแก้ตัว!)"
+        )
+        # บันทึกลิงก์ว่าใช้ไปแล้ว แม้จะแพ้ (เพื่อกันเอาลิงก์เดิมมาสแปม)
+        links_list.append(link)
+        update_snow_progress(user_id, count, False, links_list)
+
+# 3. เช็คสถานะ (Admin)
+@snow_group.command(name="check", description="[Admin] เช็คยอดเกล็ดหิมะ")
+async def snow_check(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("เฉพาะ Admin ครับ", ephemeral=True)
+        return
+    
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, count, completed FROM snowflakes")
+        players = cursor.fetchall()
+        
+    if not players:
+        await interaction.response.send_message("ยังไม่มีใครเล่นครับ", ephemeral=True)
+        return
+
+    report = "**📊 รายงานภารกิจ Snowflake**\n"
+    for row in players:
+        uid, cnt, comp = row
+        status = "✅ ครบแล้ว" if comp else f"❄️ {cnt}/5"
+        report += f"• <@{uid}> : {status}\n"
+        
+    await interaction.response.send_message(report, ephemeral=True)
+
+# --- เพิ่ม Group เข้า Tree (บรรทัดนี้สำคัญมาก ห้ามลืม!) ---
+client.tree.add_command(snow_group)
 
 # Run Bot
 client.run(TOKEN)
