@@ -39,7 +39,7 @@ def init_db():
             )
         ''')
 
-        # 3. ตาราง Vault (เพิ่ม round_link สำหรับรอเพื่อนส่ง)
+        # 3. ตาราง Vault
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS vaults (
                 team_id TEXT PRIMARY KEY,
@@ -108,7 +108,7 @@ def delete_snow_player(user_id):
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("DELETE FROM snowflakes WHERE user_id = ?", (user_id,))
 
-# --- VAULT DB FUNCTIONS (UPDATED) ---
+# --- VAULT DB FUNCTIONS ---
 def get_vault_team(user_id):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -127,7 +127,6 @@ def create_vault_team(user1_id, user2_id, target):
     turner_id = user2_id if roles_config == 0 else user1_id
     
     with sqlite3.connect(DB_NAME) as conn:
-        # เริ่มต้น round_link เป็น NULL
         conn.execute("""
             INSERT INTO vaults (team_id, user1_id, user2_id, role_warmer, role_turner, 
                                 attempts, target_attempts, completed, links, round_link_u1, round_link_u2) 
@@ -136,7 +135,6 @@ def create_vault_team(user1_id, user2_id, target):
     return warmer_id, turner_id
 
 def update_vault_round_link(team_id, is_user1, link):
-    """อัปเดตลิงก์ของคนใดคนหนึ่งในรอบปัจจุบัน"""
     with sqlite3.connect(DB_NAME) as conn:
         if is_user1:
             conn.execute("UPDATE vaults SET round_link_u1 = ? WHERE team_id = ?", (link, team_id))
@@ -144,10 +142,8 @@ def update_vault_round_link(team_id, is_user1, link):
             conn.execute("UPDATE vaults SET round_link_u2 = ? WHERE team_id = ?", (link, team_id))
 
 def complete_vault_round(team_id, attempts, completed, links_list):
-    """จบรอบ: เคลียร์ลิงก์รอบปัจจุบันทิ้ง และอัปเดตประวัติหลัก"""
     with sqlite3.connect(DB_NAME) as conn:
         links_json = json.dumps(links_list)
-        # เคลียร์ round_link_u1, u2 เป็น NULL เพื่อเริ่มรอบใหม่
         conn.execute("""
             UPDATE vaults SET attempts = ?, completed = ?, links = ?, 
                               round_link_u1 = NULL, round_link_u2 = NULL 
@@ -196,7 +192,7 @@ async def start(interaction: discord.Interaction, link: str):
         await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! เอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
         return
 
-    # --- ICEBERG TARGET: 4-19 ครั้ง ---
+    # ICEBERG TARGET: 4-19 ครั้ง
     target_attempts = random.randint(4, 19)
     create_player(user_id, link, target_attempts)
     
@@ -219,7 +215,7 @@ async def start(interaction: discord.Interaction, link: str):
 @app_commands.describe(link="วางลิงก์โพสต์ที่นี่")
 async def submit(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
-    player = get_player(user_id) # (attempts, target, completed, links_str)
+    player = get_player(user_id)
     
     if not player:
         await interaction.response.send_message("⛄ **Iceberg:** ยังไม่ได้เริ่มภารกิจเลย! พิมพ์ `/iceberg start` ก่อน!", ephemeral=True)
@@ -318,8 +314,6 @@ async def reset_user(interaction: discord.Interaction, member: discord.Member):
     else:
         await interaction.response.send_message(f"⚠️ หาไม่เจอ", ephemeral=True)
 
-client.tree.add_command(iceberg_group)
-
 # ==================================================================
 # ❄️ GROUP 2: SNOWFLAKE SNATCHER (เกมคว้าเกล็ดหิมะ)
 # ==================================================================
@@ -377,7 +371,7 @@ async def snow_start(interaction: discord.Interaction, link: str):
 @app_commands.describe(link="วางลิงก์โรลเพลย์ล่าสุด")
 async def snow_snatch(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
-    player = get_snow_player(user_id) # (count, completed, links)
+    player = get_snow_player(user_id)
 
     if not player:
         await interaction.response.send_message("⚠️ รับภารกิจก่อนครับ พิมพ์ `/snowflake start`", ephemeral=True)
@@ -396,7 +390,6 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
         await interaction.response.send_message("⚠️ ลิงก์ซ้ำ! ต้องโรลเพลย์ใหม่นะครับ", ephemeral=True)
         return
 
-    # --- Game Start ---
     await interaction.response.defer() 
 
     embed_wait = discord.Embed(title="👀 กำลังเพ่งมองท้องฟ้า...", description="รอก่อนนะ... อย่าเพิ่งกะพริบตา...", color=0x95a5a6)
@@ -404,7 +397,6 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
 
     await asyncio.sleep(random.uniform(2, 5))
 
-    # Difficulty Scaling
     time_limit = 3.0 - (count * 0.5) 
     if time_limit < 0.8: time_limit = 0.8 
 
@@ -427,7 +419,7 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
                 description=f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\nยินดีด้วยครับ <@{user_id}>\n\n📢 <@{ADMIN_ID}> มารับของหน่อยครับ!",
                 color=0xf1c40f
             )
-            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png") # ใส่รูปรางวัล
+            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png")
             await interaction.followup.send(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed_win)
         else:
             await interaction.followup.send(f"✅ **คว้าทัน!** (สะสม: {new_count}/5)\nเก่งมาก! ไปโรลเพลย์หาชิ้นต่อไปมา!")
@@ -499,7 +491,7 @@ async def vault_create(interaction: discord.Interaction, partner: discord.Member
         await interaction.response.send_message("⚠️ คุณหรือคู่หูของคุณมีทีมอยู่แล้ว! ต้อง `/vault reset` ของเก่าก่อน", ephemeral=True)
         return
 
-    # --- VAULT TARGET: 4-19 ครั้ง ---
+    # VAULT TARGET: 4-19 ครั้ง
     target_attempts = random.randint(4, 19)
     warmer_id, turner_id = create_vault_team(user1.id, user2.id, target_attempts)
     
@@ -532,7 +524,6 @@ async def vault_submit(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
     team_data = get_vault_team(user_id)
 
-    # 1. Check Team Existence
     if not team_data:
         await interaction.response.send_message("⚠️ คุณยังไม่มีทีม! ใช้ `/vault create` ก่อน", ephemeral=True)
         return
@@ -541,7 +532,6 @@ async def vault_submit(interaction: discord.Interaction, link: str):
     team_id, u1, u2, r_warm, r_turn, attempts, target, completed, links_str, r_link1, r_link2 = team_data
     links_list = json.loads(links_str)
 
-    # 2. Check Conditions
     if completed:
         await interaction.response.send_message("✅ ทีมนี้เปิดตู้สำเร็จไปแล้วครับ!", ephemeral=True)
         return
@@ -552,35 +542,27 @@ async def vault_submit(interaction: discord.Interaction, link: str):
         await interaction.response.send_message("⚠️ ลิงก์นี้เคยใช้ในรอบก่อนๆ แล้ว! ต้องใช้ลิงก์ใหม่", ephemeral=True)
         return
 
-    # 3. Identify User & Check Duplicate in Current Round
+    # Identify User & Check Duplicate
     is_user1 = (user_id == u1)
     
-    # ถ้าเป็น User1 และส่งไปแล้ว หรือ User2 และส่งไปแล้ว
     if (is_user1 and r_link1) or (not is_user1 and r_link2):
         await interaction.response.send_message("⏳ **ใจเย็นครับ!** คุณส่งลิงก์ของรอบนี้ไปแล้ว **รอคู่หูของคุณส่งก่อน** ถึงจะเริ่มรอบใหม่ได้", ephemeral=True)
         return
 
-    # 4. Save Link for Current Round
     update_vault_round_link(team_id, is_user1, link)
     
-    # อัปเดตตัวแปร local เพื่อเช็คต่อทันที
     if is_user1: r_link1 = link
     else: r_link2 = link
 
-    # 5. Check if BOTH have submitted
     if r_link1 and r_link2:
         # --- ครบ 2 คนแล้ว! ประมวลผลรอบได้ ---
-        
-        # รวมลิงก์เข้า History
         links_list.append(r_link1)
         links_list.append(r_link2)
         new_attempts = attempts + 1
         
-        # Check Success Condition (>= Target)
         is_success = new_attempts >= target
         
         if is_success:
-            # สำเร็จ: บันทึกและแจ้งเตือน
             complete_vault_round(team_id, new_attempts, True, links_list)
             
             success_embed = discord.Embed(
@@ -597,8 +579,6 @@ async def vault_submit(interaction: discord.Interaction, link: str):
             await interaction.response.send_message(content=f"<@{u1}> <@{u2}> <@{ADMIN_ID}>", embed=success_embed)
         
         else:
-            # ยังไม่สำเร็จ: บันทึกและแจ้งเตือนให้ทำต่อ
-            # คำนวณ % หลอกๆ
             raw_percent = int((new_attempts / target) * 100)
             display_percent = min(raw_percent + random.randint(-5, 5), 95) 
             if display_percent < 5: display_percent = 5
@@ -618,7 +598,6 @@ async def vault_submit(interaction: discord.Interaction, link: str):
             await interaction.response.send_message(content=f"<@{u1}> <@{u2}>", embed=fail_embed)
 
     else:
-        # --- ยังไม่ครบ (รอเพื่อน) ---
         partner_id = u2 if is_user1 else u1
         await interaction.response.send_message(
             f"📥 **รับลิงก์แล้ว!** (รอคู่หู <@{partner_id}> มาส่งงาน...)\n"
@@ -659,7 +638,7 @@ async def vault_reset(interaction: discord.Interaction, member: discord.Member):
     else:
         await interaction.response.send_message(f"⚠️ สมาชิกคนนี้ไม่มีทีม", ephemeral=True)
 
-# Add Groups to Tree
+# Add Groups to Tree (ตรวจสอบแล้ว: ไม่มี Duplicate!)
 client.tree.add_command(iceberg_group)
 client.tree.add_command(snow_group)
 client.tree.add_command(vault_group)
