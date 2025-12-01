@@ -18,8 +18,7 @@ def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         
-        # 1. ตาราง Iceberg (เพิ่ม target_attempts)
-        # หมายเหตุ: ถ้ามีไฟล์ DB เก่าอยู่ แนะนำให้ลบทิ้งก่อนรันโค้ดใหม่นี้ เพื่อให้โครงสร้างตารางอัปเดตครับ
+        # 1. ตาราง Iceberg
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
@@ -40,7 +39,7 @@ def init_db():
             )
         ''')
 
-        # 3. ตาราง Vault (ภารกิจคู่หู)
+        # 3. ตาราง Vault (เพิ่ม round_link สำหรับรอเพื่อนส่ง)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS vaults (
                 team_id TEXT PRIMARY KEY,
@@ -109,7 +108,7 @@ def delete_snow_player(user_id):
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("DELETE FROM snowflakes WHERE user_id = ?", (user_id,))
 
-# --- VAULT DB FUNCTIONS ---
+# --- VAULT DB FUNCTIONS (UPDATED) ---
 def get_vault_team(user_id):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -165,6 +164,7 @@ def get_all_vaults():
         cursor.execute("SELECT user1_id, user2_id, attempts, target_attempts, completed FROM vaults")
         return cursor.fetchall()
 
+
 # --- BOT SETUP ---
 class MyClient(discord.Client):
     def __init__(self):
@@ -179,7 +179,7 @@ class MyClient(discord.Client):
 client = MyClient()
 
 # ==================================================================
-# 🧊 GROUP 1: ICEBERG (ทุบน้ำแข็ง)
+# 🧊 GROUP 1: ICEBERG (ทุบน้ำแข็ง - Solo)
 # ==================================================================
 iceberg_group = app_commands.Group(name="iceberg", description="มาทุบน้ำแข็งกับข้า! Iceberg")
 
@@ -196,7 +196,7 @@ async def start(interaction: discord.Interaction, link: str):
         await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! เอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
         return
 
-    # --- NEW LOGIC: สุ่ม Target ไว้เลย 4-19 ครั้ง ---
+    # --- ICEBERG TARGET: 4-19 ครั้ง ---
     target_attempts = random.randint(4, 19)
     create_player(user_id, link, target_attempts)
     
@@ -242,8 +242,7 @@ async def submit(interaction: discord.Interaction, link: str):
     links_list.append(link)
     new_attempts = attempts + 1
     
-    # --- NEW LOGIC: ตรวจสอบกับ Target ที่สุ่มไว้ ---
-    # ถ้าจำนวนครั้ง >= Target ถือว่าแตก
+    # Check Success
     is_success = new_attempts >= target
 
     if is_success: 
@@ -266,7 +265,6 @@ async def submit(interaction: discord.Interaction, link: str):
     else:
         update_player_progress(user_id, new_attempts, False, links_list)
         
-        # สุ่มคำบ่น
         taunts = [
             "🥱 **Iceberg:** ยัง... ยังไม่แตกอีก แรงมีแค่นี้เหรอ?",
             "🤣 **Iceberg:** สะกิดแรงกว่านี้หน่อยสิ!",
@@ -327,7 +325,6 @@ client.tree.add_command(iceberg_group)
 # ==================================================================
 snow_group = app_commands.Group(name="snowflake", description="ภารกิจคว้าเกล็ดหิมะ (ต้องเก็บให้ครบ 5 ชิ้น)")
 
-# --- CLASS ปุ่มกดสำหรับเกมจับหิมะ (วางไว้ตรงนี้เพื่อให้เรียกใช้ได้) ---
 class SnatchView(discord.ui.View):
     def __init__(self, user_id, time_limit):
         super().__init__(timeout=time_limit)
@@ -477,7 +474,7 @@ async def snow_reset(interaction: discord.Interaction, member: discord.Member):
 
 
 # ==================================================================
-# 🗝️ GROUP 3: VAULT (ภารกิจคู่หู - ทนความหนาว)
+# 🗝️ GROUP 3: VAULT (ภารกิจคู่หู - ทนความหนาว 4-19 ครั้ง)
 # ==================================================================
 vault_group = app_commands.Group(name="vault", description="ภารกิจคู่หู: เปิดตู้นิรภัยน้ำแข็ง")
 
@@ -502,7 +499,7 @@ async def vault_create(interaction: discord.Interaction, partner: discord.Member
         await interaction.response.send_message("⚠️ คุณหรือคู่หูของคุณมีทีมอยู่แล้ว! ต้อง `/vault reset` ของเก่าก่อน", ephemeral=True)
         return
 
-    # --- สร้างทีม & สุ่ม Target (4-19 ครั้ง) ---
+    # --- VAULT TARGET: 4-19 ครั้ง ---
     target_attempts = random.randint(4, 19)
     warmer_id, turner_id = create_vault_team(user1.id, user2.id, target_attempts)
     
