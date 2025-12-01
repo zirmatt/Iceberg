@@ -186,10 +186,10 @@ async def start(interaction: discord.Interaction, link: str):
     player = get_player(user_id)
     
     if player:
-        await interaction.response.send_message("⛄ **Iceberg:** โอ๊ยย! เอ็งลงชื่อไปแล้วนี่หว่า ไปใช้คำสั่ง `/iceberg submit` เพื่อทุบน้ำแข็งนู่น!", ephemeral=True)
+        await interaction.response.send_message("⛄ **ไอซ์เบิร์ก:** โอ๊ยย! เอ็งลงชื่อไปแล้วนี่หว่า ไปใช้คำสั่ง `/iceberg submit` เพื่อทุบน้ำแข็งนู่น!", ephemeral=True)
         return
     if not link.startswith(TARGET_URL):
-        await interaction.response.send_message(f"⛄ **Iceberg:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! เอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
+        await interaction.response.send_message(f"⛄ **ไอซ์เบิร์ก:** ลิงก์อะไรเนี่ย? ข้าไม่รับ! เอาลิงก์ `{TARGET_URL}` มา", ephemeral=True)
         return
 
     # ICEBERG TARGET: 4-19 ครั้ง
@@ -328,7 +328,7 @@ class SnatchView(discord.ui.View):
     @discord.ui.button(label="❄️ คว้าเลย!", style=discord.ButtonStyle.success)
     async def grab_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("ไม่ใช่เกมของเอ็ง อย่ามาแย่ง!", ephemeral=True)
+            await interaction.response.send_message("ยุ่งน่า! ไม่ใช่ของเอ็ง อย่ามาแย่ง!", ephemeral=True)
             return
         
         self.clicked = True
@@ -344,7 +344,7 @@ async def snow_start(interaction: discord.Interaction, link: str):
     player = get_snow_player(user_id)
 
     if player:
-        await interaction.response.send_message("❄️ **Matthew:** คุณรับงานนี้ไปแล้วครับ เริ่มสะสมด้วยคำสั่ง `/snowflake snatch` ได้เลย", ephemeral=True)
+        await interaction.response.send_message("❄️ **แมทธิว:** คุณรับภารกิจนี้ไปแล้วครับ เริ่มสะสมด้วยคำสั่ง `/snowflake snatch` ได้เลย", ephemeral=True)
         return
     if not link.startswith(TARGET_URL):
         await interaction.response.send_message(f"❌ ลิงก์ไม่ถูกต้องครับ", ephemeral=True)
@@ -353,15 +353,15 @@ async def snow_start(interaction: discord.Interaction, link: str):
     create_snow_player(user_id, link)
     
     embed = discord.Embed(
-        title="❄️ ภารกิจ: Snowflake Collector",
+        title="❄️ พายุหิมะโหมกระหน่ำ?",
         description=(
-            f"สวัสดีคุณ **{interaction.user.name}** ผมต้องการ **เกล็ดหิมะสมบูรณ์ 5 ชิ้น**\n"
+            f"สวัสดีครับ ผมต้องการเกล็ดหิมะที่สมบูรณ์ทั้งหมด 5 ชิ้น\n"
             "มันจะตกลงมาเร็วมาก คุณต้องตาไวหน่อยนะ\n\n"
             "**วิธีเล่น:**\n"
-            "1. โรลเพลย์เดินหาจุดที่หิมะตก\n"
-            "2. มาพิมพ์ `/snowflake snatch [ลิงก์]`\n"
+            "1. โรลเพลย์เดินตามหาจุดที่หิมะตกเพื่อเก็บหิมะที่สมบูรณ์แบบ\n"
+            "2. มาพิมพ์ `/snowflake snatch`\n พร้อมแนบลิงก์โรลเพลย์"
             "3. รอจังหวะ... พอปุ่มสีเขียวเด้งขึ้นมา ให้รีบกด **'คว้าเลย!'** ให้ทัน\n"
-            "4. ยิ่งเก็บเยอะ... เวลาจะยิ่งน้อยลง ระวังให้ดี!"
+            "4. ยิ่งเก็บเยอะ... เวลาจะยิ่งน้อยลง ระวังให้ดีล่ะ"
         ),
         color=0xffffff
     )
@@ -387,7 +387,7 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
         await interaction.response.send_message("❌ ลิงก์ผิดครับ", ephemeral=True)
         return
     if link in links_list:
-        await interaction.response.send_message("⚠️ ลิงก์ซ้ำ! ต้องโรลเพลย์ใหม่นะครับ", ephemeral=True)
+        await interaction.response.send_message("⚠️ ลิงก์ซ้ำ! ต้องเป็นโรลเพลย์ใหม่นะครับ", ephemeral=True)
         return
 
     await interaction.response.defer() 
@@ -401,7 +401,7 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
     if time_limit < 0.8: time_limit = 0.8 
 
     view = SnatchView(user_id, time_limit)
-    embed_now = discord.Embed(title="❄️ ร่วงลงมาแล้ว!!", description=f"**กดปุ่มเดี๋ยวนี้!!** (เวลา {time_limit} วินาที)", color=0x2ecc71)
+    embed_now = discord.Embed(title="❄️ หิมะร่วงลงมาแล้ว!!", description=f"**กดปุ่มเดี๋ยวนี้!!** (ภายใน {time_limit} วินาที)", color=0x2ecc71)
     await interaction.edit_original_response(embed=embed_now, view=view)
 
     await view.wait()
@@ -415,11 +415,11 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
 
         if is_finished:
             embed_win = discord.Embed(
-                title="💎 MISSION COMPLETE!",
-                description=f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\nยินดีด้วยครับ <@{user_id}>\n\n📢 <@{ADMIN_ID}> มารับของหน่อยครับ!",
+                title="💎 รวบรวมเกล็ดหิมะครบแล้ว!",
+                description=f"สุดยอด! คุณคว้าเกล็ดหิมะครบ **5/5 ชิ้น** แล้ว!\nยินดีด้วยครับ อย่าลืมไปทำภารกิจหาชิ้นส่วนอื่นให้ครบด้วยล่ะ!",
                 color=0xf1c40f
             )
-            embed_win.set_image(url="https://i.imgur.com/example_snow_collection.png")
+            embed_win.set_image(url="https://iili.io/fxKERr7.png")
             await interaction.followup.send(content=f"<@{user_id}> <@{ADMIN_ID}>", embed=embed_win)
         else:
             await interaction.followup.send(f"✅ **คว้าทัน!** (สะสม: {new_count}/5)\nเก่งมาก! ไปโรลเพลย์หาชิ้นต่อไปมา!")
@@ -431,7 +431,7 @@ async def snow_snatch(interaction: discord.Interaction, link: str):
 @snow_group.command(name="check", description="[Admin] เช็คยอดเกล็ดหิมะ")
 async def snow_check(interaction: discord.Interaction):
     if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("เฉพาะ Admin ครับ", ephemeral=True)
+        await interaction.response.send_message("เฉพาะคุณแมทธิวครับ", ephemeral=True)
         return
     
     with sqlite3.connect(DB_NAME) as conn:
@@ -440,7 +440,7 @@ async def snow_check(interaction: discord.Interaction):
         players = cursor.fetchall()
         
     if not players:
-        await interaction.response.send_message("ยังไม่มีใครเล่นครับ", ephemeral=True)
+        await interaction.response.send_message("ยังไม่มีใครเล่นเลยครับ", ephemeral=True)
         return
 
     report = "**📊 รายงาน Snowflake**\n"
