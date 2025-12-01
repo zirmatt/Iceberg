@@ -51,7 +51,9 @@ def init_db():
                 attempts INTEGER DEFAULT 0,
                 target_attempts INTEGER DEFAULT 10,
                 completed INTEGER DEFAULT 0,
-                links TEXT DEFAULT '[]'
+                links TEXT DEFAULT '[]',
+                round_link_u1 TEXT,
+                round_link_u2 TEXT
             )
         ''')
         conn.commit()
@@ -109,34 +111,49 @@ def delete_snow_player(user_id):
 
 # --- VAULT DB FUNCTIONS ---
 def get_vault_team(user_id):
-    """หาทีมที่ User คนนี้อยู่ (ไม่ว่าจะเป็น user1 หรือ user2)"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT team_id, user1_id, user2_id, role_warmer, role_turner, attempts, target_attempts, completed, links 
+            SELECT team_id, user1_id, user2_id, role_warmer, role_turner, 
+                   attempts, target_attempts, completed, links, 
+                   round_link_u1, round_link_u2
             FROM vaults WHERE user1_id = ? OR user2_id = ?
         """, (user_id, user_id))
         return cursor.fetchone()
 
 def create_vault_team(user1_id, user2_id, target):
     team_id = f"{user1_id}_{user2_id}"
-    # สุ่มบทบาท: 0 = User1 เป็น Warmer, 1 = User1 เป็น Turner
     roles_config = random.choice([0, 1]) 
     warmer_id = user1_id if roles_config == 0 else user2_id
     turner_id = user2_id if roles_config == 0 else user1_id
     
     with sqlite3.connect(DB_NAME) as conn:
+        # เริ่มต้น round_link เป็น NULL
         conn.execute("""
-            INSERT INTO vaults (team_id, user1_id, user2_id, role_warmer, role_turner, attempts, target_attempts, completed, links) 
-            VALUES (?, ?, ?, ?, ?, 0, ?, 0, '[]')
+            INSERT INTO vaults (team_id, user1_id, user2_id, role_warmer, role_turner, 
+                                attempts, target_attempts, completed, links, round_link_u1, round_link_u2) 
+            VALUES (?, ?, ?, ?, ?, 0, ?, 0, '[]', NULL, NULL)
         """, (team_id, user1_id, user2_id, warmer_id, turner_id, target))
     return warmer_id, turner_id
 
-def update_vault_progress(team_id, attempts, completed, links_list):
+def update_vault_round_link(team_id, is_user1, link):
+    """อัปเดตลิงก์ของคนใดคนหนึ่งในรอบปัจจุบัน"""
+    with sqlite3.connect(DB_NAME) as conn:
+        if is_user1:
+            conn.execute("UPDATE vaults SET round_link_u1 = ? WHERE team_id = ?", (link, team_id))
+        else:
+            conn.execute("UPDATE vaults SET round_link_u2 = ? WHERE team_id = ?", (link, team_id))
+
+def complete_vault_round(team_id, attempts, completed, links_list):
+    """จบรอบ: เคลียร์ลิงก์รอบปัจจุบันทิ้ง และอัปเดตประวัติหลัก"""
     with sqlite3.connect(DB_NAME) as conn:
         links_json = json.dumps(links_list)
-        conn.execute("UPDATE vaults SET attempts = ?, completed = ?, links = ? WHERE team_id = ?", 
-                     (attempts, 1 if completed else 0, links_json, team_id))
+        # เคลียร์ round_link_u1, u2 เป็น NULL เพื่อเริ่มรอบใหม่
+        conn.execute("""
+            UPDATE vaults SET attempts = ?, completed = ?, links = ?, 
+                              round_link_u1 = NULL, round_link_u2 = NULL 
+            WHERE team_id = ?
+        """, (attempts, 1 if completed else 0, links_json, team_id))
 
 def delete_vault_team(team_id):
     with sqlite3.connect(DB_NAME) as conn:
@@ -147,7 +164,6 @@ def get_all_vaults():
         cursor = conn.cursor()
         cursor.execute("SELECT user1_id, user2_id, attempts, target_attempts, completed FROM vaults")
         return cursor.fetchall()
-
 
 # --- BOT SETUP ---
 class MyClient(discord.Client):
@@ -505,29 +521,30 @@ async def vault_create(interaction: discord.Interaction, partner: discord.Member
             "**กติกา:**\n"
             "1. **Warmer:** โรลเพลย์ใช้ไออุ่นร่างกาย/ลมหายใจ ห้ามใช้ไฟ!\n"
             "2. **Turner:** โรลเพลย์ออกแรงบิดกุญแจ\n"
-            "3. ทั้งคู่ต้องโรลเพลย์ แล้วนำลิงก์มาส่งด้วย `/vault submit` (ใครส่งก็ได้)\n"
-            "4. ระบบจะสุ่ม % ความสำเร็จ... ต้องทำให้ถึง 100% ถึงจะเปิดออก!\n"
+            "3. **ทั้งคู่ต้องโรลเพลย์** แล้วนำลิงก์มาส่งด้วย `/vault submit` (ต้องส่งทั้ง 2 คนถึงจะจบรอบ)\n"
+            "4. ระบบจะสุ่มความสำเร็จ... ต้องทำให้ถึง 100% ถึงจะเปิดออก!\n"
             "5. ยิ่งนาน... ยิ่งหนาว... เตรียมบรรยายความทรมานไว้ด้วยล่ะ!"
         ),
         color=0x9b59b6 # สีม่วง
     )
     await interaction.response.send_message(content=f"{user1.mention} {user2.mention}", embed=embed)
 
-@vault_group.command(name="submit", description="ส่งลิงก์ภารกิจคู่หู")
-@app_commands.describe(link="วางลิงก์โพสต์ของทีม")
+@vault_group.command(name="submit", description="ส่งลิงก์ภารกิจคู่หู (ต้องส่งทั้ง 2 คน)")
+@app_commands.describe(link="วางลิงก์โพสต์ของคุณ")
 async def vault_submit(interaction: discord.Interaction, link: str):
     user_id = interaction.user.id
     team_data = get_vault_team(user_id)
 
-    # Check Logic
+    # 1. Check Team Existence
     if not team_data:
-        await interaction.response.send_message("⚠️ คุณยังไม่มีทีม! ใช้ `/vault create @เพื่อน` ก่อน", ephemeral=True)
+        await interaction.response.send_message("⚠️ คุณยังไม่มีทีม! ใช้ `/vault create` ก่อน", ephemeral=True)
         return
     
-    # Unpack Data (team_id, u1, u2, r_warm, r_turn, att, target, comp, links)
-    team_id, u1, u2, r_warm, r_turn, attempts, target, completed, links_str = team_data
+    # Unpack Data
+    team_id, u1, u2, r_warm, r_turn, attempts, target, completed, links_str, r_link1, r_link2 = team_data
     links_list = json.loads(links_str)
 
+    # 2. Check Conditions
     if completed:
         await interaction.response.send_message("✅ ทีมนี้เปิดตู้สำเร็จไปแล้วครับ!", ephemeral=True)
         return
@@ -535,56 +552,81 @@ async def vault_submit(interaction: discord.Interaction, link: str):
         await interaction.response.send_message("❌ ลิงก์ไม่ถูกต้อง", ephemeral=True)
         return
     if link in links_list:
-        await interaction.response.send_message("⚠️ ลิงก์นี้ส่งไปแล้ว! ห้ามลักไก่", ephemeral=True)
+        await interaction.response.send_message("⚠️ ลิงก์นี้เคยใช้ในรอบก่อนๆ แล้ว! ต้องใช้ลิงก์ใหม่", ephemeral=True)
         return
 
-    # Process
-    links_list.append(link)
-    new_attempts = attempts + 1
+    # 3. Identify User & Check Duplicate in Current Round
+    is_user1 = (user_id == u1)
     
-    # --- Logic คำนวณความสำเร็จ ---
-    # เราจะไม่บอก Target จริง แต่จะบอกเป็น % ความคืบหน้า
-    # สูตร: (จำนวนครั้งปัจจุบัน / เป้าหมาย) * 100
-    # แต่ต้องไม่ให้เกิน 99% ถ้ายังไม่ถึง target
+    # ถ้าเป็น User1 และส่งไปแล้ว หรือ User2 และส่งไปแล้ว
+    if (is_user1 and r_link1) or (not is_user1 and r_link2):
+        await interaction.response.send_message("⏳ **ใจเย็นครับ!** คุณส่งลิงก์ของรอบนี้ไปแล้ว **รอคู่หูของคุณส่งก่อน** ถึงจะเริ่มรอบใหม่ได้", ephemeral=True)
+        return
+
+    # 4. Save Link for Current Round
+    update_vault_round_link(team_id, is_user1, link)
     
-    is_success = new_attempts >= target
-    
-    if is_success:
-        progress_percent = 100
-        update_vault_progress(team_id, new_attempts, True, links_list)
+    # อัปเดตตัวแปร local เพื่อเช็คต่อทันที
+    if is_user1: r_link1 = link
+    else: r_link2 = link
+
+    # 5. Check if BOTH have submitted
+    if r_link1 and r_link2:
+        # --- ครบ 2 คนแล้ว! ประมวลผลรอบได้ ---
         
-        success_embed = discord.Embed(
-            title="🔓 VAULT UNLOCKED! (100%)",
-            description=(
-                f"**Success!** ตู้นิรภัยเปิดออกแล้ว!\n"
-                f"หลังจากทนหนาวกันมา {new_attempts} รอบ... ความอบอุ่นของพวกคุณก็เอาชนะน้ำแข็งได้\n\n"
-                f"🎉 ยินดีด้วย: <@{u1}> และ <@{u2}>\n"
-                f"📢 <@{ADMIN_ID}> มารับของรางวัลครับ!"
-            ),
-            color=0x4ade80
-        )
-        await interaction.response.send_message(content=f"<@{u1}> <@{u2}> <@{ADMIN_ID}>", embed=success_embed)
+        # รวมลิงก์เข้า History
+        links_list.append(r_link1)
+        links_list.append(r_link2)
+        new_attempts = attempts + 1
         
+        # Check Success Condition (>= Target)
+        is_success = new_attempts >= target
+        
+        if is_success:
+            # สำเร็จ: บันทึกและแจ้งเตือน
+            complete_vault_round(team_id, new_attempts, True, links_list)
+            
+            success_embed = discord.Embed(
+                title="🔓 VAULT UNLOCKED! (100%)",
+                description=(
+                    f"**SUCCESS!** ตู้นิรภัยเปิดออกแล้ว!\n"
+                    f"หลังจากร่วมมือกันมา {new_attempts} รอบ (รวม {new_attempts*2} โพสต์)\n"
+                    f"ความอบอุ่นและความสามัคคีของพวกคุณเอาชนะน้ำแข็งได้!\n\n"
+                    f"🎉 ยินดีด้วย: <@{u1}> และ <@{u2}>\n"
+                    f"📢 <@{ADMIN_ID}> มารับของรางวัลครับ!"
+                ),
+                color=0x4ade80
+            )
+            await interaction.response.send_message(content=f"<@{u1}> <@{u2}> <@{ADMIN_ID}>", embed=success_embed)
+        
+        else:
+            # ยังไม่สำเร็จ: บันทึกและแจ้งเตือนให้ทำต่อ
+            # คำนวณ % หลอกๆ
+            raw_percent = int((new_attempts / target) * 100)
+            display_percent = min(raw_percent + random.randint(-5, 5), 95) 
+            if display_percent < 5: display_percent = 5
+            
+            complete_vault_round(team_id, new_attempts, False, links_list)
+            
+            fail_embed = discord.Embed(
+                title=f"❄️ Status: FROZEN ({display_percent}%)",
+                description=(
+                    f"**จบรอบที่ {new_attempts}** (ได้รับลิงก์จากทั้งคู่แล้ว)\n"
+                    f"น้ำแข็งละลายไปบ้าง... แต่ยังเปิดไม่ออก!\n\n"
+                    f"🥶 **สถานการณ์:** อากาศเย็นลงกว่าเดิม...\n"
+                    f"**สิ่งที่ต้องทำ:** ให้ทั้งคู่ไปโรลเพลย์ต่อ แล้วกลับมาส่งลิงก์ใหม่!"
+                ),
+                color=0x3498db
+            )
+            await interaction.response.send_message(content=f"<@{u1}> <@{u2}>", embed=fail_embed)
+
     else:
-        # คำนวณ % หลอกๆ (Progress Bar)
-        raw_percent = int((new_attempts / target) * 100)
-        # สุ่ม Variation นิดหน่อยไม่ให้เลขเป๊ะเกินไป (แต่ห้ามเกิน 95)
-        display_percent = min(raw_percent + random.randint(-5, 5), 95) 
-        if display_percent < 5: display_percent = 5 # ขั้นต่ำ 5%
-        
-        update_vault_progress(team_id, new_attempts, False, links_list)
-        
-        fail_embed = discord.Embed(
-            title=f"❄️ Status: FROZEN ({display_percent}%)",
-            description=(
-                f"ความพยายามครั้งที่: **{new_attempts}**\n"
-                f"น้ำแข็งละลายไปบ้างแล้ว... แต่กลไกยังติดขัดอยู่!\n\n"
-                f"🥶 **สถานการณ์:** อากาศเย็นลงเรื่อยๆ มือเริ่มชา...\n"
-                f"**สิ่งที่ต้องทำ:** โรลเพลย์บรรยายความหนาวที่เพิ่มขึ้น แล้วลองใหม่อีกครั้ง!"
-            ),
-            color=0x3498db # สีฟ้าเข้ม
+        # --- ยังไม่ครบ (รอเพื่อน) ---
+        partner_id = u2 if is_user1 else u1
+        await interaction.response.send_message(
+            f"📥 **รับลิงก์แล้ว!** (รอคู่หู <@{partner_id}> มาส่งงาน...)\n"
+            f"*เมื่อเพื่อนส่งครบแล้ว ระบบจะประมวลผลทันที*"
         )
-        await interaction.response.send_message(embed=fail_embed)
 
 @vault_group.command(name="check", description="[Admin] เช็คทีม Vault ทั้งหมด")
 async def vault_check(interaction: discord.Interaction):
@@ -621,6 +663,7 @@ async def vault_reset(interaction: discord.Interaction, member: discord.Member):
         await interaction.response.send_message(f"⚠️ สมาชิกคนนี้ไม่มีทีม", ephemeral=True)
 
 # Add Groups to Tree
+client.tree.add_command(iceberg_group)
 client.tree.add_command(snow_group)
 client.tree.add_command(vault_group)
 
