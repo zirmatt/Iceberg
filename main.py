@@ -170,6 +170,7 @@ class MyClient(discord.Client):
     async def on_ready(self):
         init_db()
         await self.tree.sync()
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="พวกมานุด"))
         print(f'Logged in as {self.user} (Iceberg Systems Online!)')
 
 client = MyClient()
